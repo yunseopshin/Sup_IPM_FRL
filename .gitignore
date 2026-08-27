@@ -2,12 +2,8 @@
 /AGENTS.md
 /CLAUDE.md
 
-# Drafts and reference material not used by the Overleaf main document
-/Experiment.tex
-/SupIPM_FRL_Theory.tex
+# Local reference papers
 /example/
-/figures/
-/iclr2027/
 
 # LaTeX build artifacts
 *.aux
@@ -23,4 +19,5 @@
 *.toc
 *.xdv
 /iclr2027_conference.pdf
+/iclr2027/iclr2027_conference.pdf
 /main.pdf
