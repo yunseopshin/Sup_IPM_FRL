@@ -1,5 +1,6 @@
 
 \documentclass{article} % For LaTeX2e
+\usepackage[T1]{fontenc}
 \usepackage{iclr2027_conference,times}
 
 % Optional math commands from https://github.com/goodfeli/dlbook_notation.
@@ -59,6 +60,30 @@ The word \textsc{Abstract} must be centered, in small caps, and in point size 12
 line spaces precede the abstract. The abstract must be limited to one
 paragraph.
 \end{abstract}
+
+\section{Introduction}
+
+Machine learning models can achieve high predictive accuracy but still produce systematically different outcomes across demographic groups.  Because a learned representation may later be used for downstream tasks that were not specified when the encoder was trained, a fairness constraint on the original prediction head does not guarantee fairness for other heads trained on the same representation \citep{madras2018adversarially}.  Fair representation learning (FRL) aims to learn a representation that remains useful for prediction but is independent of the sensitive attribute \citep{zemel2013learning,madras2018adversarially}.  Independence from the sensitive attribute ensures that every prediction head using only the representation satisfies demographic parity (DP) \citep{dwork2012fairness}.
+
+For a categorical sensitive attribute, DP requires the prediction distribution to be the same across protected groups.  Most FRL methods impose this requirement during representation learning by matching the representation distributions across the observed groups.  Adversarial methods train a classifier to predict group membership, whereas maximum mean discrepancy (MMD) and learned integral probability metrics (IPMs) compare the group distributions directly \citep{edwards2016censoring,louizos2016variational,madras2018adversarially,kim2022parametric,deka2023mmdbfair}.  For a continuously distributed sensitive attribute $S$, such as age or income, each exact value has probability zero, so the data provide no repeated observations from which to estimate the corresponding conditional representation distribution.  Binning pools nearby values to create groups, but it hides differences within each bin and makes the resulting fairness assessment depend on the bin boundaries \citep{mary2019continuous,kong2025fair}.
+
+Earlier work on continuous sensitive attributes imposed fairness on fitted predictions rather than on learned representations.  Maximal correlation penalizes dependence between $S$ and a fitted prediction \citep{mary2019continuous,grari2020continuous}, whereas generalized demographic parity (GDP) averages the absolute difference between the conditional and overall mean predictions \citep{jiang2022gdp}.  These criteria do not constrain the representation itself, so their guarantees need not hold after the representation is paired with a different predictor.  \citet{kong2025fair} extended distribution matching to continuous sensitive attributes through the expectation of integral probability metrics (EIPM).  EIPM computes an IPM between the conditional representation distribution at each sensitive value $s$ and the marginal representation distribution, and averages these IPMs over the distribution of $S$.  Their method, Fair Representation using EIPM (FREM), estimates the conditional distributions by kernel smoothing and compares them using MMD \citep{gretton2012kernel}.
+
+Because EIPM follows GDP by averaging over the distribution of $S$, even a large conditional discrepancy confined to a region with little probability mass can make only a small contribution to EIPM.  However, in the categorical setting, DP applies separately to every protected group, regardless of its population share.  We therefore propose $L_{\infty}$-GDP, which extends this groupwise requirement to a continuous sensitive attribute by replacing the average over $S$ with a supremum over $s$.  To learn representations that guarantee $L_{\infty}$-GDP for prediction functions in the chosen discriminator class, we use supIPM, the supremum over $s$ of the IPM between the conditional and marginal representation distributions.  Controlling supIPM bounds the conditional discrepancy at every sensitive value, while EIPM controls only the average over $S$.
+
+We estimate supIPM by combining kernel smoothing with ReLU-IPM, whose discriminators are single rectified linear unit (ReLU) neurons \citep{park2025relu}.  The estimator supports adversarial training with minibatches and does not require discretizing $S$.  Our theory shows that an empirical supIPM constraint yields population fairness guarantees for learned representations and smooth downstream prediction functions.
+
+\paragraph{Contributions.}
+\begin{itemize}
+  \item We propose $L_{\infty}$-GDP as a fairness criterion for continuous sensitive attributes and use supIPM to learn representations that satisfy it.
+  \item We develop a minibatch adversarial learning algorithm that uses ReLU discriminators to optimize supIPM without binning the sensitive attribute.
+  \item We prove uniform convergence of empirical supIPM and derive population fairness guarantees for learned representations and prediction functions with bounded H\"older norm.
+\end{itemize}
+
+\bibliographystyle{iclr2027_conference}
+\bibliography{bibliography}
+
+\end{document}
 
 \section{Submission of conference papers to ICLR 2027}
 
