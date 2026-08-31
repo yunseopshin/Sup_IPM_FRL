@@ -1,0 +1,51 @@
+# supIPM FRL default config (Crime / FREM protocol).
+# null values are filled from the dataset preset (src/data.py PRESETS).
+
+# --- data (FREM protocol) ---
+dataset: Crime          # Crime | Adult
+source: null            # preset: Crime_0 / Adult_0
+target: null            # preset: Crime_1 / Adult_1
+task: null              # preset: reg (Crime) / cls (Adult)
+sensitive_attr: null    # preset: racepctblack (Crime) / age (Adult)
+batch_size: null        # preset: 200 (Crime) / 1024 (Adult)
+seed: 2023              # FREM seeds: 2023..2027
+mini: false
+drop_sensitive: false
+
+# --- supervised part (FREM-aligned) ---
+epochs: 200
+lr: 1.0e-3
+weight_decay: 1.0e-2
+betas: [0.5, 0.999]
+
+# --- method ---
+alg: supipm             # supipm | frem | reg_gdp | adv  (baselines = FREM-verbatim regularizers on the unified representer)
+z_norm: true            # true: representation z_tilde = z/sqrt(||z||^2+1) feeds head + fairness term; false: raw z (original option)
+critic_proj: sphere_box # supipm discriminator constraint: sphere_box (paper Eq.(3)) | ball (original joint-ball option)
+gamma_rep: 1.0          # frem only: RBF bandwidth on representations
+gamma_s: 0.05           # frem only: kernel bandwidth on raw-scale S
+
+# --- fairness objective ---
+lmda_f: 0.0             # lambda; 0.0 = unfair baseline (shared by all algs)
+alpha: 0.05             # trim: s* constrained to [q_alpha(S), q_{1-alpha}(S)]
+bandwidth: 0.25         # kernel bandwidth h in units of std(S) (S standardized)
+
+# --- sup over s (projected gradient ascent, batched restarts) ---
+K: 8                    # random initial points (one replaced by the grid argmax)
+n_s_steps: 20
+lr_s: 0.1
+n_grid: 33              # coarse grid for seeding + sanity check
+grid_tol: 1.0e-6
+
+# --- ReLU-IPM discriminator scheme (ReLUIPM-FRL_full defaults / as-run sweep) ---
+critic_num: 100
+critic_step: 2
+critic_lr: 1.0e-3
+
+# --- evaluation (test-time sup_s IPM over a fine grid) ---
+eval_grid: 401
+eval_restarts: 4
+eval_steps: 400
+eval_lr: 1.0e-2
+
+out_root: results
