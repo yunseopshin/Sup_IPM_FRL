@@ -31,6 +31,7 @@ alpha: 0.05             # trim: s* constrained to [q_alpha(S), q_{1-alpha}(S)]
 bandwidth: 0.25         # kernel bandwidth h in units of std(S) (S standardized)
 
 # --- sup over s (projected gradient ascent, batched restarts) ---
+s_mode: shared          # shared: one s* for the whole pool | percritic: one s*_c per critic (same penalty value, per-critic ascent target)
 K: 8                    # random initial points (one replaced by the grid argmax)
 n_s_steps: 20
 lr_s: 0.1

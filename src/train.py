@@ -30,8 +30,9 @@ import yaml
 
 from data import apply_preset, get_loaders
 from models import build_model, ReLUCritic, project_critics, normalize_reps, REP_DIM
-from ipm import kernel_weights, pool_ipm
+from ipm import kernel_weights, pool_ipm, kernel_weights_percritic, percritic_ipm
 from sup_s import find_s_star
+from sup_s_percritic import find_s_star_percritic
 from baselines import frlgdp_loss, reg_gdp_loss, build_adv_critic
 import evaluate
 
@@ -63,6 +64,8 @@ def parse_config():
     parser.add_argument('--critic_num', type=int, default=None)
     parser.add_argument('--critic_step', type=int, default=None)
     parser.add_argument('--critic_lr', type=float, default=None)
+    parser.add_argument('--s_mode', type=str, default=None,
+                        choices=['shared', 'percritic'])
     parser.add_argument('--alg', type=str, default=None,
                         choices=['supipm', 'frem', 'reg_gdp', 'adv'])
     parser.add_argument('--z_norm', type=str, default=None, choices=['true', 'false'])
@@ -70,6 +73,11 @@ def parse_config():
                         choices=['sphere_box', 'ball'])
     parser.add_argument('--gamma_rep', type=float, default=None)
     parser.add_argument('--gamma_s', type=float, default=None)
+    parser.add_argument('--synthb_s0', type=float, default=None,
+                        help='SynthB only: centre of the leak bump, in sd(S) units')
+    parser.add_argument('--synthb_s_dist', type=str, default=None,
+                        choices=['normal', 'uniform'],
+                        help='SynthB only: latent S distribution (both mean 0, sd 1)')
     parser.add_argument('--eval_steps', type=int, default=None)
     parser.add_argument('--eval_grid', type=int, default=None)
     parser.add_argument('--mini', action='store_true')
@@ -108,6 +116,8 @@ def make_run_dir(cfg):
         alg_tag += '-raw'
     if cfg.get('critic_proj', 'sphere_box') == 'ball':
         alg_tag += '-ball'
+    if cfg.get('s_mode', 'shared') == 'percritic':
+        alg_tag += '-percritic'
     run_dir = os.path.join(out_root, tag, alg_tag,
                            f"lmda_f-{cfg['lmda_f']}", f"seed-{cfg['seed']}")
     os.makedirs(run_dir, exist_ok=True)
@@ -141,7 +151,10 @@ def main():
         raise ValueError(f'unknown alg: {alg}')
     znorm = bool(cfg.get('z_norm', True))
     proj = cfg.get('critic_proj', 'sphere_box')
-    print(f"[Info] alg={alg} z_norm={znorm} critic_proj={proj}", flush=True)
+    s_mode = cfg.get('s_mode', 'shared')
+    if s_mode not in ('shared', 'percritic'):
+        raise ValueError(f'unknown s_mode: {s_mode}')
+    print(f"[Info] alg={alg} z_norm={znorm} critic_proj={proj} s_mode={s_mode}", flush=True)
     h = float(cfg['bandwidth'])
     s_mean, s_sd = data['s_mean'], data['s_sd']
     s_lo, s_hi = data['s_lo'], data['s_hi']
@@ -175,14 +188,14 @@ def main():
     log_file = open(log_path, 'w', newline='')
     log = csv.writer(log_file)
     log.writerow(['epoch', 'task_loss', 'ipm_s_star', 's_star_mean', 's_star_last',
-                  'ga_max_mean', 'grid_max_mean', 'violations', 'sec'])
+                  's_star_std', 'ga_max_mean', 'grid_max_mean', 'violations', 'sec'])
 
     t_start = time.time()
     for epoch in range(1, cfg['epochs'] + 1):
         t0 = time.time()
         task_sum, fair_sum, n_samp = 0.0, 0.0, 0
         s_sum, ga_sum, grid_sum, n_batch, n_viol = 0.0, 0.0, 0.0, 0, 0
-        s_last = 0.0
+        s_last, sstd_sum = 0.0, 0.0
 
         for inputs, labels, sensitives in data['train']:
             inputs = inputs.to(device).view(-1, input_dim)
@@ -198,9 +211,14 @@ def main():
                 for _ in range(cfg['critic_step']):
                     with torch.no_grad():
                         z_det = rep_of(model, inputs, znorm)
-                    s_star, _ = find_s_star(z_det, s_std, critic, h, s_lo, s_hi, **sup_kwargs)
-                    w = kernel_weights(s_star.view(1), s_std, h)
-                    critic_loss = -pool_ipm(w, critic(z_det)).sum()
+                    if s_mode == 'shared':
+                        s_star, _ = find_s_star(z_det, s_std, critic, h, s_lo, s_hi, **sup_kwargs)
+                        w = kernel_weights(s_star.view(1), s_std, h)                    # [1, B]
+                        critic_loss = -pool_ipm(w, critic(z_det)).sum()
+                    else:
+                        s_star_c, _ = find_s_star_percritic(z_det, s_std, critic, h, s_lo, s_hi, **sup_kwargs)
+                        w_c = kernel_weights_percritic(s_star_c.view(1, -1), s_std, h)  # [1, C, B]
+                        critic_loss = -percritic_ipm(w_c, critic(z_det)).sum()
                     critic_optimizer.zero_grad()
                     critic_loss.backward()
                     torch.nn.utils.clip_grad_norm_(critic.parameters(), 5.0)
@@ -224,9 +242,15 @@ def main():
             diag = None
             if lmda > 0.0:
                 if alg == 'supipm':
-                    s_star, diag = find_s_star(rep.detach(), s_std, critic, h, s_lo, s_hi, **sup_kwargs)
-                    w = kernel_weights(s_star.view(1), s_std, h)
-                    fair_loss = pool_ipm(w, critic(rep)).max()
+                    # s* / s*_c are constants for the encoder step in both modes (Danskin)
+                    if s_mode == 'shared':
+                        s_star, diag = find_s_star(rep.detach(), s_std, critic, h, s_lo, s_hi, **sup_kwargs)
+                        w = kernel_weights(s_star.view(1), s_std, h)
+                        fair_loss = pool_ipm(w, critic(rep)).max()
+                    else:
+                        s_star_c, diag = find_s_star_percritic(rep.detach(), s_std, critic, h, s_lo, s_hi, **sup_kwargs)
+                        w_c = kernel_weights_percritic(s_star_c.view(1, -1), s_std, h)
+                        fair_loss = percritic_ipm(w_c, critic(rep)).max()
                 elif alg == 'frem':
                     fair_loss = frlgdp_loss(rep, sens, gamma_rep=cfg['gamma_rep'],
                                             gamma_s=cfg['gamma_s'])
@@ -260,18 +284,19 @@ def main():
             if diag is not None:
                 s_sum += diag['s_star']
                 s_last = diag['s_star']
+                sstd_sum += diag.get('s_star_std', 0.0)  # spread of s*_c (0.0 in shared mode)
                 ga_sum += diag['ga_max']
                 grid_sum += diag['grid_max']
                 n_viol += int(diag['violation'])
 
         nb = max(n_batch, 1)
         row = [epoch, task_sum / n_samp, fair_sum / n_samp, s_sum / nb, s_last,
-               ga_sum / nb, grid_sum / nb, n_viol, round(time.time() - t0, 2)]
+               sstd_sum / nb, ga_sum / nb, grid_sum / nb, n_viol, round(time.time() - t0, 2)]
         log.writerow([f'{v:.6f}' if isinstance(v, float) else v for v in row])
         log_file.flush()
         if epoch == 1 or epoch % 10 == 0:
             print(f"[{epoch}/{cfg['epochs']}] task={row[1]:.4f} ipm(s*)={row[2]:.4f} "
-                  f"s*={row[3]:.3f} grid_max={row[5]:.4f} viol={n_viol}", flush=True)
+                  f"s*={row[3]:.3f} grid_max={row[6]:.4f} viol={n_viol}", flush=True)
 
     log_file.close()
     print(f'[Info] training done in {time.time() - t_start:.1f}s', flush=True)

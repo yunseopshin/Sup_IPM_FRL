@@ -42,6 +42,22 @@ Sweep (one `srun --gres=gpu:1` job per (dataset, λ, seed), backgrounded, then `
 DATASETS="Crime" LMDAS="0.0 0.1 1.0" SEEDS="2023 2024" scripts/run_sweep.sh
 ```
 
+`s_mode` comparison grids (critic_step × shared/percritic, restartable) + reports:
+
+```bash
+scripts/run_smode_compare.sh                  # Crime, lmda_f=1.0, cs2/cs20 x shared/percritic
+python scripts/aggregate_smode_compare.py
+scripts/run_smode_adult.sh                    # Adult percritic cs2, beside the existing shared ladder
+python scripts/aggregate_smode_adult.py
+```
+
+Equivalence check for the two `s_mode`s (PERCRITIC_S.md §4, one-shot):
+
+```bash
+srun --gres=gpu:1 --cpus-per-task=10 --partition=idea --time=0:30:00 \
+  /usr/local/miniconda3/envs/nine/bin/python tests/check_s_mode.py
+```
+
 Re-evaluate a finished run (recomputes `results.json` + `sup_ipm_curve.npz`):
 
 ```bash
@@ -52,6 +68,7 @@ srun --gres=gpu:1 --cpus-per-task=10 --partition=idea --time=1:00:00 \
 Outputs per run (`results/<dataset>-<S>/lmda_f-<λ>/seed-<seed>/`; `--mini` runs get a
 separate `<dataset>-<S>-mini/` tree): `config.yaml`
 (resolved), `train_log.csv` (per epoch: `task_loss`, `ipm_s_star`, `s_star_mean`,
+`s_star_std` (spread of the per-critic `s*_c`; 0 in `shared` mode),
 `ga_max_mean`, `grid_max_mean`, `violations` — the GD-vs-grid sanity check), `model.pt`,
 `results.json` (FREM metrics on train/val/test — plus `inf_gdp`/`inf_gdp_s`, the
 L∞ generalized DP `sup_s |E[ŷ|S=s] − E[ŷ]|` over the trimmed train-S range, same NW
@@ -72,6 +89,7 @@ estimator as ΔGDP — and `sup_ipm`, `s_star_*` on val/test),
 | `lmda_f` | λ (0 = FREM unfair baseline; fairness machinery skipped) | 0.0 |
 | `bandwidth` | kernel h in units of std(S) | 0.25 |
 | `alpha` | s-range trim quantile for the sup | 0.05 |
+| `s_mode` | order of the two suprema in the penalty `sup_s sup_v`: `shared` = one `s*` for the whole critic pool (`src/sup_s.py`), `percritic` = one `s*_c` per critic (`src/sup_s_percritic.py`). The penalty VALUE is identical (the sups commute); only the discriminator ascent target differs — `Σ_c Δ_c(s*)` vs `Σ_c Δ_c(s*_c)`, so `percritic` lets the pool cover several `s`-modes instead of collapsing onto the strongest critic's `s*`. `percritic` runs get a `-percritic` run-dir suffix. See `notes/s_mode_check.md` | `shared` |
 | `K`, `n_s_steps`, `lr_s` | GA restarts / steps / step size for sup over s | 8, 20, 0.1 |
 | `n_grid`, `grid_tol` | coarse seeding grid + sanity tolerance | 33, 1e-6 |
 | `critic_num`, `critic_step`, `critic_lr` | ReLU-IPM discriminator pool (as-run sweep values) | 100, 2, 1e-3 |

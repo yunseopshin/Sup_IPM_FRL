@@ -31,8 +31,31 @@ def pool_ipm(w, V):
     return torch.matmul(w - 1.0 / B, V).abs()
 
 
+def kernel_weights_percritic(s_query, s_batch, h):
+    """Per-critic Nadaraya-Watson kernel weights.
+
+    s_query: [K, C] query points (one s per restart and critic), s_batch: [B]
+    standardized sensitive values. Returns w: [K, C, B], rows (last dim) summing
+    to 1 — same softmax form as kernel_weights, one extra leading dim.
+    """
+    e = -((s_query.unsqueeze(2) - s_batch.view(1, 1, -1)) ** 2) / (2.0 * h * h)
+    return F.softmax(e, dim=2)
+
+
+def percritic_ipm(w, V):
+    """Per-(restart, critic) conditional IPM values at that critic's own s.
+
+    Delta_c(s_{k,c}) = |sum_i (w[k,c,i] - 1/B) V[i,c]| — each critic c is paired
+    with its own kernel row, so the contraction stays [K, C] (never the [K*C, C]
+    cross product). w: [K, C, B] kernel weights, V: [B, C] critic outputs.
+    Returns [K, C].
+    """
+    B = V.size(0)
+    return torch.einsum('kci,ic->kc', w - 1.0 / B, V).abs()
+
+
 def relu_ipm_sup_grid(z, s_std, h, grid, n_restarts=4, n_steps=400, lr=1e-2,
-                      warm_critic=None, mode='sphere_box'):
+                      warm_critic=None, mode='sphere_box', cross_eval=0):
     """Test-time sup_v IPM_hat(h, s) on a fine s-grid over the full evaluation set.
 
     For every grid point, maximizes over the paper's ReLU class
@@ -48,6 +71,13 @@ def relu_ipm_sup_grid(z, s_std, h, grid, n_restarts=4, n_steps=400, lr=1e-2,
     z: [n, d] representations, expected ALREADY normalized into B^d by
     models.normalize_reps (treated as constants). s_std: [n] standardized S,
     grid: [G] standardized query points. Returns ipm_vals: [G] (detached).
+
+    `cross_eval=k` (opt-in, off by default so the reported protocol is unchanged)
+    additionally scores EVERY grid point against ALL grid points' critics every k
+    steps. The ascent is unchanged; only the running max is tightened. Each grid
+    point then no longer depends on its own restarts alone, which removes the
+    isolated downward spikes a failed restart leaves in the curve. One extra
+    [G, n] x [n, G*R] matmul per scoring pass.
     """
     device = z.device
     z = z.detach()
@@ -92,6 +122,9 @@ def relu_ipm_sup_grid(z, s_std, h, grid, n_restarts=4, n_steps=400, lr=1e-2,
         V = torch.relu(torch.matmul(z, theta.t()) + mu)        # [n, G*R]
         obj = torch.einsum('gn,ngr->gr', W, V.view(n, G, R)).abs()
         best = torch.maximum(best, obj.max(dim=1).values.detach())
+        if cross_eval and (step == n_steps or step % cross_eval == 0):
+            with torch.no_grad():                              # every critic at every s
+                best = torch.maximum(best, torch.matmul(W, V).abs().max(dim=1).values)
         if step == n_steps:
             break
         opt.zero_grad()

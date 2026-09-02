@@ -17,6 +17,8 @@ if FREM_SRC not in sys.path:
 
 from base.datasets import load_data  # noqa: E402  (FREM, read-only)
 
+SYNTHB_S0 = 1.2          # default bump centre; --synthb_s0 overrides it (see SYNTHB)
+
 # FREM protocol presets (notebook/runner.py / src/main.py defaults)
 PRESETS = {
     'Crime': dict(source='Crime_0', target='Crime_1', task='reg',
@@ -29,7 +31,8 @@ PRESETS = {
     # each run's config.yaml for reproducibility).
     'SynthB': dict(source='SynthB', target='SynthB', task='reg',
                    sensitive_attr='synth_s', batch_size=200,
-                   synthb_gamma=0.0, synthb_A=3.0, synthb_n=5000),
+                   synthb_gamma=0.0, synthb_A=3.0, synthb_n=5000,
+                   synthb_s0=SYNTHB_S0, synthb_s_dist='normal'),
 }
 
 # --- Scenario B: cost-free-removal synthetic data (v2) -------------------------
@@ -45,16 +48,27 @@ PRESETS = {
 # s0 = 1.2 lies INSIDE the alpha=0.05 trimmed range of N(0,1) so the training sup
 # can reach it. S is MinMax-scaled to [0,1] on the train split (FREM protocol).
 SYNTHB = dict(n_train=2000, n_val=500, n_test=2000,
-              A=1.2, s0=1.2, tau=0.2, leak_noise=0.5,
+              A=1.2, s0=SYNTHB_S0, tau=0.2, leak_noise=0.5,
               beta=(0.8, -0.6, 0.4, 0.5), y_noise=0.3)
 
 
-def _synthb_draw(rng, n, gamma, A):
-    s = rng.standard_normal(n)
+def synthb_s_draw(rng, n, s_dist='normal'):
+    """The latent S of SynthB. Both variants have mean 0 and sd 1, so s0, the
+    bandwidth and the alpha-trim keep the same meaning in sd(S) units; what changes
+    is what sits at the edge of the support. 'normal' leaves a single extreme order
+    statistic there (n_eff -> 1); 'uniform' keeps the density flat all the way out."""
+    if s_dist == 'uniform':
+        return rng.uniform(-np.sqrt(3.0), np.sqrt(3.0), n)
+    return rng.standard_normal(n)
+
+
+def _synthb_draw(rng, n, gamma, A, s0=None, s_dist='normal'):
+    s0 = SYNTHB['s0'] if s0 is None else s0
+    s = synthb_s_draw(rng, n, s_dist)
     x_task = rng.standard_normal((n, 4))
     x_noise = rng.standard_normal((n, 3))
     task_signal = x_task @ np.asarray(SYNTHB['beta'])
-    leak = (A * np.exp(-(s - SYNTHB['s0']) ** 2 / (2 * SYNTHB['tau'] ** 2))
+    leak = (A * np.exp(-(s - s0) ** 2 / (2 * SYNTHB['tau'] ** 2))
             + gamma * task_signal
             + SYNTHB['leak_noise'] * rng.standard_normal(n))
     logits = task_signal + SYNTHB['y_noise'] * rng.standard_normal(n)
@@ -69,9 +83,11 @@ def _synthb_loaders(cfg):
     gamma = cfg.get('synthb_gamma', 0.0)
     A = cfg.get('synthb_A', SYNTHB['A'])
     n = cfg.get('synthb_n', SYNTHB['n_train'])
-    xtr, ytr, srt = _synthb_draw(rng, n, gamma, A)
-    xva, yva, sva = _synthb_draw(rng, max(n // 5, 200), gamma, A)
-    xte, yte, ste = _synthb_draw(rng, n, gamma, A)
+    s0 = cfg.get('synthb_s0')                 # None -> SYNTHB['s0']; 0.0 must survive
+    sd = cfg.get('synthb_s_dist') or 'normal'
+    xtr, ytr, srt = _synthb_draw(rng, n, gamma, A, s0, sd)
+    xva, yva, sva = _synthb_draw(rng, max(n // 5, 200), gamma, A, s0, sd)
+    xte, yte, ste = _synthb_draw(rng, n, gamma, A, s0, sd)
     smin, smax = srt.min(), srt.max()
     srt, sva, ste = [(a - smin) / (smax - smin) for a in (srt, sva, ste)]
 
